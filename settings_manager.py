@@ -19,6 +19,9 @@ class SettingsManager:
         self.session_liked_patterns = []
         self.elevenlabs_api_key = ""
         self.elevenlabs_voice_id = ""
+        self.llm_provider = "ollama"
+        self.llm_base_url = "http://127.0.0.1:11434"
+        self.llm_model = "llama3:8b-instruct-q4_K_M"
         self.min_depth = 5
         self.max_depth = 100
         self.min_speed = 10
@@ -51,6 +54,9 @@ class SettingsManager:
             self.user_profile = data.get("user_profile", self._get_default_profile())
             self.elevenlabs_api_key = data.get("elevenlabs_api_key", "")
             self.elevenlabs_voice_id = data.get("elevenlabs_voice_id", "")
+            self.llm_provider = data.get("llm_provider", "ollama")
+            self.llm_base_url = data.get("llm_base_url", "http://127.0.0.1:11434")
+            self.llm_model = data.get("llm_model", "llama3:8b-instruct-q4_K_M")
             self.min_depth = data.get("min_depth", 5)
             self.max_depth = data.get("max_depth", 100)
             self.min_speed = data.get("min_speed", 10)
@@ -85,6 +91,7 @@ class SettingsManager:
                 "persona_desc": self.persona_desc,
                 "profile_picture_b64": self.profile_picture_b64,
                 "elevenlabs_api_key": self.elevenlabs_api_key, "elevenlabs_voice_id": self.elevenlabs_voice_id,
+                "llm_provider": self.llm_provider, "llm_base_url": self.llm_base_url, "llm_model": self.llm_model,
                 "patterns": self.patterns, "milking_patterns": self.milking_patterns,
                 "rules": self.rules, "user_profile": self.user_profile,
                 "min_depth": self.min_depth, "max_depth": self.max_depth,

@@ -1,34 +1,118 @@
 import json
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any
+
 import requests
 
-class LLMService:
-    def __init__(self, url, model="llama3:8b-instruct-q4_K_M"):
-        self.url = url
+
+class _BaseLLMClient(ABC):
+    def __init__(self, base_url: str, model: str):
+        self.base_url = base_url.rstrip("/")
         self.model = model
+
+    @abstractmethod
+    def generate(self, messages: List[Dict[str, str]], temperature: float) -> str:
+        """Return the raw text content produced by the provider."""
+
+
+class _OllamaClient(_BaseLLMClient):
+    def generate(self, messages: List[Dict[str, str]], temperature: float) -> str:
+        payload = {
+            "model": self.model,
+            "stream": False,
+            "format": "json",
+            "options": {
+                "temperature": temperature,
+                "top_p": 0.95,
+                "repeat_penalty": 1.2,
+                "repeat_penalty_last_n": 40,
+            },
+            "messages": messages,
+        }
+        response = requests.post(
+            f"{self.base_url}/api/chat", json=payload, timeout=60
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
+
+
+class _KoboldClient(_BaseLLMClient):
+    def _format_messages(self, messages: List[Dict[str, str]]) -> str:
+        conversation_lines = []
+        for message in messages:
+            role = message.get("role", "")
+            content = message.get("content", "")
+            if role == "system":
+                conversation_lines.append(content)
+            elif role == "user":
+                conversation_lines.append(f"User: {content}")
+            else:
+                conversation_lines.append(f"Assistant: {content}")
+        conversation_lines.append("Assistant:")
+        return "\n".join(conversation_lines)
+
+    def generate(self, messages: List[Dict[str, str]], temperature: float) -> str:
+        prompt = self._format_messages(messages)
+        payload = {
+            "prompt": prompt,
+            "temperature": temperature,
+            "top_p": 0.95,
+            "typical_p": 1.0,
+            "top_k": 0,
+            "max_length": 768,
+            "min_length": 1,
+            "repetition_penalty": 1.2,
+            "stop_sequence": ["User:", "Assistant:"],
+        }
+        if self.model:
+            payload["model"] = self.model
+        response = requests.post(
+            f"{self.base_url}/api/v1/generate",
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict) and "results" in data and data["results"]:
+            return "".join(result.get("text", "") for result in data["results"])
+        return data.get("text", "") if isinstance(data, dict) else ""
+
+
+class LLMService:
+    def __init__(self, provider: str = "ollama", base_url: str = "http://127.0.0.1:11434", model: str = "llama3:8b-instruct-q4_K_M"):
+        self.provider = provider.lower()
+        self.base_url = base_url
+        self.model = model
+        self.client = self._create_client()
+
+    def _create_client(self) -> _BaseLLMClient:
+        if self.provider == "ollama":
+            return _OllamaClient(self.base_url, self.model)
+        if self.provider == "koboldcpp":
+            return _KoboldClient(self.base_url, self.model)
+        raise ValueError(f"Unsupported LLM provider: {self.provider}")
+
+    def _parse_content(self, content: Any) -> Dict[str, Any]:
+        if isinstance(content, dict):
+            return content
+        if not isinstance(content, str):
+            raise ValueError("LLM response content is not a string or dict")
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start != -1 and end != -1 and end > start:
+                return json.loads(content[start:end])
+            raise
 
     def _talk_to_llm(self, messages, temperature=0.7):
         try:
-            response = requests.post(self.url, json={
-                "model": self.model,
-                "stream": False,
-                "format": "json",
-                "options": {"temperature": temperature, "top_p": 0.95, "repeat_penalty": 1.2, "repeat_penalty_last_n": 40},
-                "messages": messages
-            }, timeout=60)
-            
-            content = response.json()["message"]["content"]
-            return json.loads(content)
-        
-        except (json.JSONDecodeError, KeyError, requests.exceptions.RequestException) as e:
+            raw_content = self.client.generate(messages, temperature)
+            return self._parse_content(raw_content)
+        except (json.JSONDecodeError, ValueError, requests.exceptions.RequestException) as e:
             print(f"Error processing LLM response: {e}")
-            try:
-                content_str = response.json()["message"]["content"]
-                start = content_str.find('{')
-                end = content_str.rfind('}') + 1
-                if start != -1 and end != -1:
-                    return json.loads(content_str[start:end])
-            except Exception:
-                 return {"chat": f"LLM Connection Error: {e}", "move": None, "new_mood": None}
             return {"chat": f"LLM Connection Error: {e}", "move": None, "new_mood": None}
 
     def _build_system_prompt(self, context):

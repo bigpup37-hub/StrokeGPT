@@ -17,14 +17,21 @@ from background_modes import AutoModeThread, auto_mode_logic, milking_mode_logic
 
 # ─── INITIALIZATION ───────────────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
-LLM_URL = "http://127.0.0.1:11434/api/chat"
 settings = SettingsManager(settings_file_path="my_settings.json")
 settings.load()
 
 handy = HandyController(settings.handy_key)
 handy.update_settings(settings.min_speed, settings.max_speed, settings.min_depth, settings.max_depth)
 
-llm = LLMService(url=LLM_URL)
+try:
+    llm = LLMService(
+        provider=settings.llm_provider,
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+    )
+except ValueError as exc:
+    print(f"⚠️ {exc}. Falling back to Ollama defaults.")
+    llm = LLMService()
 audio = AudioService()
 if settings.elevenlabs_api_key:
     if audio.set_api_key(settings.elevenlabs_api_key):
@@ -96,6 +103,39 @@ def add_message_to_queue(text, add_to_history=True):
         clean_text = re.sub(r'<[^>]+>', '', text).strip()
         if clean_text: chat_history.append({"role": "assistant", "content": clean_text})
     threading.Thread(target=audio.generate_audio_for_text, args=(text,)).start()
+
+def _sync_settings_from_payload(data):
+    if not isinstance(data, dict):
+        return
+    if (persona := data.get('persona_desc')) and persona != settings.persona_desc:
+        settings.persona_desc = persona
+        settings.save()
+    if (key := data.get('key')) and key != settings.handy_key:
+        handy.set_api_key(key)
+        settings.handy_key = key
+        settings.save()
+
+def _decrement_special_persona_counter():
+    global special_persona_mode, special_persona_interactions_left
+    if special_persona_mode is None:
+        return
+    special_persona_interactions_left -= 1
+    if special_persona_interactions_left <= 0:
+        special_persona_mode = None
+        add_message_to_queue("(Personality core reverted to standard operation.)", add_to_history=False)
+
+def _apply_llm_response(llm_response, enqueue_to_queue=True):
+    global current_mood
+    if not isinstance(llm_response, dict):
+        return
+    chat_text = llm_response.get("chat")
+    if chat_text and enqueue_to_queue:
+        add_message_to_queue(chat_text)
+    if (new_mood := llm_response.get("new_mood")):
+        current_mood = new_mood
+    move = llm_response.get("move") if isinstance(llm_response.get("move"), dict) else None
+    if not auto_mode_active_task and move:
+        handy.move(move.get("sp"), move.get("dp"), move.get("rng"))
 
 def start_background_mode(mode_logic, initial_message, mode_name):
     global auto_mode_active_task, edging_start_time
@@ -177,13 +217,10 @@ def _handle_chat_commands(text):
 @app.route('/send_message', methods=['POST'])
 def handle_user_message():
     global special_persona_mode, special_persona_interactions_left
-    data = request.json
+    data = request.get_json(silent=True) or {}
     user_input = data.get('message', '').strip()
 
-    if (p := data.get('persona_desc')) and p != settings.persona_desc:
-        settings.persona_desc = p; settings.save()
-    if (k := data.get('key')) and k != settings.handy_key:
-        handy.set_api_key(k); settings.handy_key = k; settings.save()
+    _sync_settings_from_payload(data)
     
     if not handy.handy_key: return jsonify({"status": "no_key_set"})
     if not user_input: return jsonify({"status": "empty_message"})
@@ -198,18 +235,43 @@ def handle_user_message():
         return jsonify({"status": "message_relayed_to_active_mode"})
     
     llm_response = llm.get_chat_response(chat_history, get_current_context())
-    
-    if special_persona_mode is not None:
-        special_persona_interactions_left -= 1
-        if special_persona_interactions_left <= 0:
-            special_persona_mode = None
-            add_message_to_queue("(Personality core reverted to standard operation.)", add_to_history=False)
 
-    if chat_text := llm_response.get("chat"): add_message_to_queue(chat_text)
-    if new_mood := llm_response.get("new_mood"): global current_mood; current_mood = new_mood
-    if not auto_mode_active_task and (move := llm_response.get("move")):
-        handy.move(move.get("sp"), move.get("dp"), move.get("rng"))
+    _decrement_special_persona_counter()
+    _apply_llm_response(llm_response)
     return jsonify({"status": "ok"})
+
+@app.route('/api/chat', methods=['POST'])
+def api_chat_route():
+    global special_persona_mode, special_persona_interactions_left
+    data = request.get_json(silent=True) or {}
+    user_input = data.get('message', '').strip()
+
+    _sync_settings_from_payload(data)
+
+    if not handy.handy_key: return jsonify({"status": "no_key_set"})
+    if not user_input: return jsonify({"status": "empty_message"})
+
+    chat_history.append({"role": "user", "content": user_input})
+
+    handled, response = _handle_chat_commands(user_input.lower())
+    if handled:
+        return response
+
+    if auto_mode_active_task:
+        mode_message_queue.append(user_input)
+        return jsonify({"status": "message_relayed_to_active_mode"})
+
+    llm_response = llm.get_chat_response(chat_history, get_current_context())
+
+    _decrement_special_persona_counter()
+    _apply_llm_response(llm_response)
+
+    return jsonify({
+        "status": "ok",
+        "chat": llm_response.get("chat") if isinstance(llm_response, dict) else None,
+        "move": llm_response.get("move") if isinstance(llm_response, dict) else None,
+        "new_mood": llm_response.get("new_mood") if isinstance(llm_response, dict) else None,
+    })
 
 @app.route('/check_settings')
 def check_settings_route():

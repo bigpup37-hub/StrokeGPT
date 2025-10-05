@@ -58,7 +58,53 @@ You need two free programs to run the app.
 * Open in Browser:
     * Open your web browser and go to the following address:
         http://127.0.0.1:5000
-* The splash screen will appear. Press Enter to begin the on-screen setup guide. Enjoy! 
+* The splash screen will appear. Press Enter to begin the on-screen setup guide. Enjoy!
+
+### Using a Different LLM Backend (KoboldCPP, etc.)
+
+StrokeGPT now supports multiple local LLM providers. By default it speaks to Ollama, but you can switch to KoboldCPP (or point it at another Ollama host) by updating `my_settings.json` after the app creates it the first time you run the server.
+
+```json
+{
+  "llm_provider": "koboldcpp",           // "ollama" or "koboldcpp"
+  "llm_base_url": "http://127.0.0.1:5001", // Base URL without the path segment
+  "llm_model": "kobold_model_name"
+}
+```
+
+* **Ollama:** keep `llm_provider` as `"ollama"`. `llm_base_url` should point at your Ollama instance (e.g., `http://127.0.0.1:11434`).
+* **KoboldCPP:** set `llm_provider` to `"koboldcpp"` and point `llm_base_url` at the KoboldCPP server root. The service uses the `/api/v1/generate` endpoint and sends conversation history with sensible defaults for temperature, top-p, repetition penalty, and stop sequences.
+
+Restart the app after changing the file so the new backend is loaded.
+
+### Silly Tavern / External Client API
+
+Third-party chat clients can talk to StrokeGPT via the new synchronous endpoint:
+
+* **Endpoint:** `POST http://127.0.0.1:5000/api/chat`
+* **Request body:**
+
+  ```json
+  {
+    "message": "Your chat text",
+    "key": "<handy api key>",
+    "persona_desc": "Optional persona override"
+  }
+  ```
+
+* **Response body:**
+
+  ```json
+  {
+    "status": "ok",
+    "chat": "Assistant reply text",
+    "move": {"sp": 50, "dp": 50, "rng": 100},
+    "new_mood": "Playful"
+  }
+  ```
+
+The endpoint mirrors the in-app `/send_message` logic: it validates your Handy key, honours STOP/auto/edging commands, and executes motion instructions immediately when no background mode is active. When a command takes over (e.g., `stop`), the JSON `status` describes the outcome instead of returning chat text.
+ 
 
 *A Quick Note on Speed
 
